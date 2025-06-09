@@ -25,7 +25,7 @@ from sdk.common import colors, plot_one_box
 from example.self_driving import lane_detect
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
-from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState, ButtonState
+from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState, ButtonState, RGBState, RGBStates
 
 class SelfDrivingNode(Node):
     def __init__(self, name):
@@ -50,6 +50,8 @@ class SelfDrivingNode(Node):
         self.mecanum_pub = self.create_publisher(Twist, '/controller/cmd_vel', 1)
         self.servo_state_pub = self.create_publisher(SetPWMServoState, 'ros_robot_controller/pwm_servo/set_state', 1)
         self.result_publisher = self.create_publisher(Image, '~/image_result', 1)
+        self.publisher_ = self.create_publisher(RGBStates, '/ros_robot_controller/set_rgb', 10)
+        self.last_led_state = None
 
         self.create_service(Trigger, '~/enter', self.enter_srv_callback) # enter the game
         self.create_service(Trigger, '~/exit', self.exit_srv_callback) # exit the game
@@ -68,6 +70,24 @@ class SelfDrivingNode(Node):
 
         self.timer = self.create_timer(0.0, self.init_process, callback_group=timer_cb_group)
 
+
+    def set_led_color(self, is_stop):
+        if is_stop:
+            color = (255,0,0)
+            state_str = "RED"
+        else:
+            color = (0,255,0)
+            state_str = "GREEN"
+        if self.last_led_state != state_str:
+            msg = RGBStates()
+            msg.states = [
+                RGBState(index=1, red=color[0], green=color[1], blue=color[2]),     #left
+                # RGBState(index=2, red=color[0], green=color[1], blue=color[2])    #right
+            ]          
+            self.publisher_.publish(msg)
+            self.get_logger().info(f'Setting LEDs to {state_str}')
+            self.last_led_state = state_str
+
     def button_callback(self, msg):
         if msg.id == 1:
             self.process_button_press('Button 1', msg.state)
@@ -78,11 +98,15 @@ class SelfDrivingNode(Node):
         if button_name == 'Button 1':
             self.start = True
             self.button_state = True
+            self.stop = False
             self.get_logger().info(f'{button_name} short press detected')
             # You can add additional logic here for short press
         elif button_name == 'Button 2':
             self.start = False
             self.button_state = False
+            self.stop = True
+            # self.set_led_color(self.stop)
+
             self.mecanum_pub.publish(Twist())
             self.get_logger().info(f'{button_name} long press detected')
            
@@ -262,13 +286,17 @@ class SelfDrivingNode(Node):
                 else:
                     continue
             result_image = image.copy()
-            if self.start and self.button_state:
+    
+            
+            if self.start and self.button_state: 
                 h, w = image.shape[:2]
                 # obtain the binary image of the lane
                 binary_image = self.lane_detect.get_binary(image)
-
                 twist = Twist()
-
+                # twist.linear.x = self.normal_speed
+                # self.mecanum_pub.publish(twist)
+                self.set_led_color(self.stop)
+        
                 # if detecting the zebra crossing, start to slow down
                 self.get_logger().info('\033[1;33m%s\033[0m' % self.crosswalk_distance)
                 if 70 < self.crosswalk_distance and not self.start_slow_down:  # The robot starts to slow down only when it is close enough to the zebra crossing
@@ -287,9 +315,13 @@ class SelfDrivingNode(Node):
                         if self.traffic_signs_status.class_name == 'red' and area < 1000:  # If the robot detects a red traffic light, it will stop
                             self.mecanum_pub.publish(Twist())
                             self.stop = True
+                            self.set_led_color(self.stop)
+
                         elif self.traffic_signs_status.class_name == 'green':  # If the traffic light is green, the robot will slow down and pass through
                             twist.linear.x = self.slow_down_speed
                             self.stop = False
+                            self.set_led_color(self.stop)
+
                     if not self.stop:  # In other cases where the robot is not stopped, slow down the speed and calculate the time needed to pass through the crosswalk. The time needed is equal to the length of the crosswalk divided by the driving speed
                         twist.linear.x = self.slow_down_speed
                         if time.time() - self.count_slow_down > self.crosswalk_length / twist.linear.x:
@@ -306,6 +338,7 @@ class SelfDrivingNode(Node):
                             self.mecanum_pub.publish(Twist())  
                             self.start_park = True
                             self.stop = True
+                            # self.set_led_color(self.stop)
                             threading.Thread(target=self.park_action).start()
                     else:
                         self.count_park = 0  
@@ -358,9 +391,9 @@ class SelfDrivingNode(Node):
 
             else:
                 time.sleep(0.01)
-                # twist = Twist()
-                # self.mecanum_pub.publish(twist)
+                self.set_led_color(self.stop)
 
+                
             
             bgr_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
             if self.display:
@@ -374,7 +407,8 @@ class SelfDrivingNode(Node):
             time_d = 0.03 - (time.time() - time_start)
             if time_d > 0:
                 time.sleep(time_d)
-        self.mecanum_pub.publish(Twist())
+        # self.mecanum_pub.publish(Twist())
+        
         rclpy.shutdown()
 
 
